@@ -9,6 +9,24 @@
 struct Bullet {
   float x, y;
   bool active;
+  int damage;
+  float r, g, b;
+};
+
+struct Zombie {
+  float x, y;
+  bool isAlive;
+  int health;
+  float angle;
+  float baseY;
+  bool zigzagEnabled;
+};
+
+enum UpgradeType {
+  UPGRADE_NONE,
+  UPGRADE_SERVER,
+  UPGRADE_BULLET_ORANGE,
+  UPGRADE_BULLET_RED
 };
 
 const float serverLeft = 0.7f;
@@ -26,12 +44,6 @@ float upgradeEndTime = 0.0f;
 const float upgradeCost = 20;
 const float upgradeDuration = 30.0f;
 
-struct Zombie {
-  float x, y;
-  bool isAlive;
-  int health;
-};
-
 std::vector<Bullet> bullets;
 std::vector<Zombie> zombies;
 
@@ -48,13 +60,16 @@ int level = 1;
 int zombiesKilled = 0;
 int maxLevel = 20;
 
+const int orangeUpgradeCost = 10;
+const int redUpgradeCost = 30;
+int bulletUpgradeLevel = 0;
+
 void checkServerBreach() {
   if (upgradeEndTime == 0.0f) {
     gameOver = true;
   } else {
     zombieEntryTimes.push_back(glutGet(GLUT_ELAPSED_TIME) / 1000.0f);
 
-    // Check if 2 entries within 2 seconds
     if (zombieEntryTimes.size() >= 3) {
       float timeDiff = zombieEntryTimes.back() -
                        zombieEntryTimes[zombieEntryTimes.size() - 2];
@@ -176,9 +191,22 @@ void loadZombies(int count) {
   for (int i = 0; i < count; ++i) {
     Zombie z;
     z.x = -1.0f - i * 0.3f;
-    z.y = ((rand() % 180) - 90) / 100.0f;
+    z.baseY = ((rand() % 180) - 90) / 100.0f;
+    z.y = z.baseY;
+    z.angle = 0.0f;
+    z.zigzagEnabled = (level >= 4);
     z.isAlive = true;
-    z.health = (level >= 3) ? 3 : 1;
+    if (level >= 2) {
+      z.health = 2;
+    } else if (level >= 3) {
+      z.health = 3;
+    } else if (level >= 4) {
+      z.health = 4;
+    } else if (level >= 10) {
+      z.health = 5;
+    } else {
+      z.health = 1;
+    }
     zombies.push_back(z);
   }
 }
@@ -213,6 +241,18 @@ void display() {
   } else {
     drawSquare(serverLeft, -1.0f, serverRight - serverLeft, 2.0f, 0.0f, 0.3f,
                0.0f, 0.1f);
+  }
+  if (bulletUpgradeLevel < 2) {
+    std::string bulletUpgradeText;
+    if (bulletUpgradeLevel == 0 && points >= orangeUpgradeCost) {
+      bulletUpgradeText = "Press B for Orange Bullets (10)";
+    } else if (bulletUpgradeLevel == 1 && points >= redUpgradeCost) {
+      bulletUpgradeText = "Press B for Red Bullets (30)";
+    }
+
+    if (!bulletUpgradeText.empty()) {
+      renderText(-0.45f, 0.75f, bulletUpgradeText);
+    }
   }
 
   if (gameOver) {
@@ -254,16 +294,26 @@ void display() {
 
   // Draw bullets
   for (const auto &bullet : bullets) {
-    if (bullet.active)
-      drawSquare(bullet.x, bullet.y, 0.05f, 0.05f, 1.0f, 1.0f, 1.0f);
+    if (bullet.active) {
+      drawSquare(bullet.x, bullet.y, 0.05f, 0.05f, bullet.r, bullet.g,
+                 bullet.b);
+    }
   }
 
   renderText(-0.9f, 0.9f, "Level: " + std::to_string(level));
   glutSwapBuffers();
 }
 
-// Rest of the functions remain unchanged...
-// ... (keyboard, specialDown, specialUp, init, main)
+void purchaseBulletUpgrade() {
+  if (bulletUpgradeLevel == 0 && points >= orangeUpgradeCost) {
+    points -= orangeUpgradeCost;
+    bulletUpgradeLevel = 1;
+  } else if (bulletUpgradeLevel == 1 && points >= redUpgradeCost) {
+    points -= redUpgradeCost;
+    bulletUpgradeLevel = 2;
+  }
+}
+
 void update(int value) {
   if (gameOver)
     return;
@@ -288,11 +338,18 @@ void update(int value) {
   for (auto &zombie : zombies) {
     if (zombie.isAlive) {
       // Movement logic
+      float horizontalSpeed = zombieBaseSpeed;
       if (zombie.x < hackerRight) {
-        zombie.x += zombieBaseSpeed * 2; // Faster in hacker zone
+        horizontalSpeed += zombieBaseSpeed * 3; // Faster in hacker zone
       } else {
-        zombie.x += zombieBaseSpeed;
+        horizontalSpeed += zombieBaseSpeed;
       }
+      if (zombie.zigzagEnabled) {
+        zombie.angle += 0.1f;
+        zombie.y = zombie.baseY + sin(zombie.angle) * 0.15f;
+        horizontalSpeed *= 1.2f;
+      }
+      zombie.x += horizontalSpeed;
 
       // Game over condition
       if (zombie.x >= serverLeft) {
@@ -316,16 +373,18 @@ void update(int value) {
           float bx = bullet.x + 0.025f;
           float by = bullet.y + 0.025f;
 
-          if (bx >= zxLeft && bx <= zxRight && by >= zyBottom && by <= zyTop) {
+          if (bullet.x >= zombie.x - 0.024f && bullet.x <= zombie.x + 0.024f &&
+              bullet.y >= zombie.y - 0.15f && bullet.y <= zombie.y + 0.15f) {
             bullet.active = false;
             zombie.health--;
 
+            zombie.health -= bullet.damage;
             if (zombie.health <= 0) {
               zombie.isAlive = false;
               zombiesKilled++;
-              points++;
+              points += bullet.damage;
             }
-            break; // Bullet can only hit one zombie
+            break;
           }
         }
       }
@@ -365,12 +424,33 @@ void keyboard(unsigned char key, int x, int y) {
     b.x = 0.95f;
     b.y = playerY;
     b.active = true;
+    switch (bulletUpgradeLevel) {
+    case 2: // Red bullets
+      b.damage = 3;
+      b.r = 1.0f;
+      b.g = 0.0f;
+      b.b = 0.0f;
+      break;
+    case 1: // Orange bullets
+      b.damage = 2;
+      b.r = 1.0f;
+      b.g = 0.5f;
+      b.b = 0.0f;
+      break;
+    default: // Normal bullets
+      b.damage = 1;
+      b.r = 1.0f;
+      b.g = 1.0f;
+      b.b = 1.0f;
+    }
     bullets.push_back(b);
     // }
   } else if (key == 'u' || key == 'U' && !gameOver) {
     purchaseUpgrade();
   } else if (key == 27) {
     exit(0);
+  } else if (key == 'b' || key == 'B') {
+    purchaseBulletUpgrade();
   }
 }
 
